@@ -1,0 +1,1359 @@
+<!DOCTYPE html>
+<html lang="id" class="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>GT Massing Planner & RTTEX Recipe Tree</title>
+  <!-- Tailwind CSS untuk UI Dark Mode -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <!-- Pako.js untuk Decompress Zlib pada file .rttex (RTPACK) -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/pako/2.1.0/pako.min.js"></script>
+  <style>
+    /* Styling Pohon Silsilah (Interactive CSS Tree) */
+    .tree-container {
+      overflow: auto;
+      cursor: grab;
+      user-select: none;
+    }
+    .tree-container:active {
+      cursor: grabbing;
+    }
+    .tree ul {
+      padding-top: 24px;
+      position: relative;
+      display: flex;
+      justify-content: center;
+      transition: all 0.3s;
+    }
+    .tree li {
+      float: left;
+      text-align: center;
+      list-style-type: none;
+      position: relative;
+      padding: 24px 8px 0 8px;
+      transition: all 0.3s;
+    }
+    /* Garis konektor cabang pohon */
+    .tree li::before, .tree li::after {
+      content: '';
+      position: absolute;
+      top: 0;
+      right: 50%;
+      border-top: 2px solid #475569;
+      width: 50%;
+      height: 24px;
+    }
+    .tree li::after {
+      right: auto;
+      left: 50%;
+      border-left: 2px solid #475569;
+    }
+    .tree li:only-child::after, .tree li:only-child::before {
+      display: none;
+    }
+    .tree li:only-child {
+      padding-top: 0;
+    }
+    .tree li:first-child::before, .tree li:last-child::after {
+      border: 0 none;
+    }
+    .tree li:last-child::before {
+      border-right: 2px solid #475569;
+      border-radius: 0 6px 0 0;
+    }
+    .tree li:first-child::after {
+      border-radius: 6px 0 0 0;
+    }
+    .tree ul ul::before {
+      content: '';
+      position: absolute;
+      top: 0;
+      left: 50%;
+      border-left: 2px solid #475569;
+      width: 0;
+      height: 24px;
+    }
+    /* Pixelated rendering agar icon 32x32 Growtopia tajam & tidak blur */
+    .pixelated {
+      image-rendering: pixelated;
+      image-rendering: -moz-crisp-edges;
+      image-rendering: crisp-edges;
+    }
+    /* Custom Scrollbar */
+    ::-webkit-scrollbar { width: 8px; height: 8px; }
+    ::-webkit-scrollbar-track { background: #0f172a; }
+    ::-webkit-scrollbar-thumb { background: #334155; border-radius: 4px; }
+    ::-webkit-scrollbar-thumb:hover { background: #475569; }
+  </style>
+</head>
+<body class="bg-slate-950 text-slate-100 font-sans h-screen flex flex-col overflow-hidden">
+
+  <!-- HEADER & CONTROL BAR -->
+  <header class="bg-slate-900 border-b border-slate-800 px-4 py-3 flex flex-wrap items-center justify-between gap-4 z-20 shadow-lg">
+    <div class="flex items-center gap-3">
+      <div class="w-9 h-9 rounded-lg bg-emerald-500/20 border border-emerald-500/40 flex items-center justify-center text-emerald-400 font-bold text-lg shadow-inner">
+        🌱
+      </div>
+      <div>
+        <h1 class="font-bold text-base tracking-wide text-white flex items-center gap-2">
+          GT Massing Architect
+          <span id="dbStatusBadge" class="text-[11px] font-medium px-2 py-0.5 rounded-full bg-amber-500/20 text-amber-300 border border-amber-500/30">
+            Sample Data (52 Items)
+          </span>
+        </h1>
+        <p class="text-xs text-slate-400">items.txt v26 Parser + Direct .rttex Sprite Renderer & Profit Calculator</p>
+      </div>
+    </div>
+
+    <!-- SEARCH ITEM & TARGET CALCULATOR -->
+    <div class="flex flex-wrap items-center gap-3 flex-1 max-w-3xl justify-center">
+      <!-- Search Box -->
+      <div class="relative flex-1 min-w-[240px]">
+        <input 
+          id="searchInput" 
+          type="text" 
+          placeholder="Cari item untuk di-mass (cth: Pointy Sign, Danger Sign, Daisy)..." 
+          class="w-full bg-slate-950 border border-slate-700 focus:border-emerald-500 rounded-lg pl-9 pr-4 py-1.5 text-sm text-slate-100 placeholder-slate-500 focus:outline-none transition"
+          autocomplete="off"
+        />
+        <span class="absolute left-3 top-2 text-slate-500 text-xs">🔍</span>
+        <!-- Dropdown Hasil Search -->
+        <div id="searchResults" class="hidden absolute left-0 right-0 mt-1 bg-slate-900 border border-slate-700 rounded-lg shadow-2xl max-h-72 overflow-y-auto z-50 divide-y divide-slate-800/60"></div>
+      </div>
+
+      <!-- Target Trees Input -->
+      <div class="flex items-center bg-slate-950 border border-slate-800 rounded-lg px-2.5 py-1 gap-2">
+        <label class="text-xs text-slate-400 font-medium whitespace-nowrap">Target Pohon:</label>
+        <input 
+          id="targetTreesInput" 
+          type="number" 
+          min="1" 
+          value="200" 
+          class="w-20 bg-slate-900 border border-slate-700 rounded px-2 py-0.5 text-sm font-bold text-emerald-400 text-center focus:outline-none focus:border-emerald-500"
+        />
+      </div>
+
+      <!-- Yield Ratio Input -->
+      <div class="flex items-center bg-slate-950 border border-slate-800 rounded-lg px-2.5 py-1 gap-2" title="Rata-rata berapa Seed bersih yang didapat dari 1 pohon sub-resep setelah bloknya dihancurkan (1.0 = rasio 1:1)">
+        <label class="text-xs text-slate-400 font-medium whitespace-nowrap">Yield (Seed/Pohon):</label>
+        <input 
+          id="yieldRateInput" 
+          type="number" 
+          step="0.05" 
+          min="0.1" 
+          value="1.00" 
+          class="w-16 bg-slate-900 border border-slate-700 rounded px-2 py-0.5 text-sm font-bold text-sky-400 text-center focus:outline-none focus:border-sky-500"
+        />
+      </div>
+    </div>
+
+    <!-- ASSET MANAGER BUTTON -->
+    <div class="flex items-center gap-2">
+      <button 
+        onclick="toggleModal('assetModal', true)" 
+        class="bg-emerald-600 hover:bg-emerald-500 text-white font-semibold text-xs px-3.5 py-2 rounded-lg shadow flex items-center gap-2 transition"
+      >
+        <span>📂 Load items.txt & .rttex</span>
+        <span id="rttexCountBadge" class="bg-emerald-800 text-emerald-200 px-1.5 py-0.2 rounded text-[10px]">0 RTTEX</span>
+      </button>
+    </div>
+  </header>
+
+  <!-- MAIN WORKSPACE (SPLIT VIEW) -->
+  <div class="flex-1 flex overflow-hidden">
+    
+    <!-- LEFT PANEL: INTERACTIVE RECIPE TREE (65% Width) -->
+    <main class="flex-1 flex flex-col bg-slate-950 relative overflow-hidden border-r border-slate-800">
+      <!-- Sub-toolbar di atas kanvas pohon -->
+      <div class="px-4 py-2 bg-slate-900/60 border-b border-slate-800/80 flex items-center justify-between text-xs text-slate-400">
+        <div class="flex items-center gap-4">
+          <span>💡 <b>Tips:</b> Klik tombol <code class="bg-slate-800 text-amber-300 px-1.5 py-0.5 rounded">🛒 Beli Langsung</code> pada kartu item jika tidak ingin membuat item tersebut dari awal.</span>
+        </div>
+        <div class="flex items-center gap-2">
+          <button onclick="resetSkippedNodes()" class="hover:text-white bg-slate-800 hover:bg-slate-700 px-2.5 py-1 rounded transition">
+            Reset Skip Branch
+          </button>
+        </div>
+      </div>
+
+      <!-- Canvas Pohon Silsilah -->
+      <div id="treeViewport" class="tree-container flex-1 p-8 flex items-start justify-center overflow-auto">
+        <div id="treeRoot" class="tree min-w-max">
+          <!-- Akan diisi oleh JavaScript -->
+        </div>
+      </div>
+    </main>
+
+    <!-- RIGHT PANEL: SHOPPING LIST, WL PROFIT CALCULATOR & STEP-BY-STEP (35% Width, Min 380px) -->
+    <aside class="w-[420px] xl:w-[460px] bg-slate-900 flex flex-col overflow-hidden">
+      
+      <!-- Tabs Navigasi Panel Kanan -->
+      <div class="grid grid-cols-2 border-b border-slate-800 bg-slate-950/50 text-xs font-semibold">
+        <button id="tabBtnShopping" onclick="switchTab('shopping')" class="py-3 text-center border-b-2 border-emerald-500 text-emerald-400 bg-slate-900/80 transition">
+          🛒 Shopping List & Profit WL
+        </button>
+        <button id="tabBtnSteps" onclick="switchTab('steps')" class="py-3 text-center border-b-2 border-transparent text-slate-400 hover:text-slate-200 transition">
+          📋 Urutan Tahap Massing
+        </button>
+      </div>
+
+      <!-- TAB 1: SHOPPING LIST & PROFIT WL -->
+      <div id="tabContentShopping" class="flex-1 overflow-y-auto p-4 space-y-5">
+        
+        <!-- Ringkasan Statistik Massing -->
+        <div class="grid grid-cols-3 gap-2">
+          <div class="bg-slate-950 border border-slate-800 rounded-lg p-2.5 text-center">
+            <div class="text-[11px] text-slate-400">Total Pohon Ditanam</div>
+            <div id="statTotalTrees" class="text-base font-bold text-white mt-0.5">0</div>
+          </div>
+          <div class="bg-slate-950 border border-slate-800 rounded-lg p-2.5 text-center">
+            <div class="text-[11px] text-slate-400">Total Waktu Tumbuh</div>
+            <div id="statTotalGrowTime" class="text-base font-bold text-amber-400 mt-0.5">0s</div>
+          </div>
+          <div class="bg-slate-950 border border-slate-800 rounded-lg p-2.5 text-center">
+            <div class="text-[11px] text-slate-400">Jenis Base Seed</div>
+            <div id="statBaseTypes" class="text-base font-bold text-sky-400 mt-0.5">0</div>
+          </div>
+        </div>
+
+        <!-- Daftar Belanja Base Seed + Input Rate WL -->
+        <div>
+          <div class="flex items-center justify-between mb-2">
+            <h2 class="text-xs font-bold uppercase tracking-wider text-slate-300">Daftar Belanja Seed (Base / Skipped)</h2>
+            <span class="text-[11px] text-slate-400">Format Harga: <b>Seed per WL</b> (misal 200/1)</span>
+          </div>
+          <div id="shoppingListContainer" class="space-y-2">
+            <!-- Di-render secara dinamis -->
+          </div>
+        </div>
+
+        <!-- KALKULATOR MODAL & ESTIMASI PROFIT WL -->
+        <div class="bg-slate-950 border border-slate-800 rounded-xl p-4 space-y-3 shadow-inner">
+          <h3 class="text-xs font-bold uppercase tracking-wider text-emerald-400 flex items-center justify-between">
+            <span>💰 Kalkulator Modal & Profit (WL / DL)</span>
+          </h3>
+
+          <div class="grid grid-cols-2 gap-3 pt-1">
+            <div>
+              <label class="block text-[11px] text-slate-400 mb-1">Jual Hasil dalam Bentuk:</label>
+              <select id="sellModeSelect" onchange="recalculateProfit()" class="w-full bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-white focus:outline-none focus:border-emerald-500">
+                <option value="block">Block Hasil Panen</option>
+                <option value="seed">Seed Hasil Akhir</option>
+              </select>
+            </div>
+            <div>
+              <label class="block text-[11px] text-slate-400 mb-1">Rasio Drop Block / Pohon:</label>
+              <input id="blockYieldInput" type="number" step="0.1" value="2.2" oninput="recalculateProfit()" class="w-full bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs font-semibold text-white focus:outline-none focus:border-emerald-500" title="Rata-rata block yang didapat dari 1 pohon akhir (normalnya 2.0 - 2.5)" />
+            </div>
+          </div>
+
+          <div class="grid grid-cols-2 gap-3">
+            <div>
+              <label class="block text-[11px] text-slate-400 mb-1">Harga Jual (Item per X WL):</label>
+              <div class="flex items-center gap-1">
+                <input id="sellRatePerWlInput" type="number" step="0.1" min="0.01" value="10" oninput="recalculateProfit()" class="w-full bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs font-bold text-emerald-400 focus:outline-none focus:border-emerald-500" title="Berapa item per WL" />
+                <span class="text-xs text-slate-500">/</span>
+                <input id="sellWlAmountInput" type="number" step="1" min="1" value="1" oninput="recalculateProfit()" class="w-16 bg-slate-900 border border-slate-700 rounded-lg px-2 py-1.5 text-xs font-bold text-amber-400 text-center focus:outline-none focus:border-amber-500" title="Jumlah WL" />
+                <span class="text-[11px] text-amber-400 font-bold">WL</span>
+              </div>
+              <span class="text-[10px] text-slate-500">Contoh: Jual 10/1 WL atau 1/5 WL</span>
+            </div>
+            <div>
+              <label class="block text-[11px] text-slate-400 mb-1">Biaya Tambahan (WL):</label>
+              <input id="extraCostWlInput" type="number" step="1" value="0" oninput="recalculateProfit()" placeholder="Fuel pack, world, dll" class="w-full bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-white focus:outline-none focus:border-emerald-500" />
+              <span class="text-[10px] text-slate-500">Opsional (Fuel, sewa jasa, dll)</span>
+            </div>
+          </div>
+
+          <div class="border-t border-slate-800 pt-3 space-y-1.5 text-xs">
+            <div class="flex justify-between">
+              <span class="text-slate-400">Estimasi Output Akhir:</span>
+              <span id="profitEstOutput" class="font-semibold text-slate-200">0 Items</span>
+            </div>
+            <div class="flex justify-between">
+              <span class="text-slate-400">Total Modal Belanja Seed + Ekstra:</span>
+              <span id="profitTotalCost" class="font-bold text-rose-400">0 WL</span>
+            </div>
+            <div class="flex justify-between">
+              <span class="text-slate-400">Estimasi Pendapatan Kotor (Omzet):</span>
+              <span id="profitGrossRev" class="font-bold text-sky-400">0 WL</span>
+            </div>
+            <div class="flex justify-between items-center pt-2 border-t border-slate-800/80 text-sm">
+              <span class="font-bold text-white">Estimasi Profit Bersih:</span>
+              <span id="profitNetValue" class="font-extrabold text-emerald-400 text-base">+0 WL</span>
+            </div>
+          </div>
+        </div>
+
+      </div>
+
+      <!-- TAB 2: STEP-BY-STEP MASSING GUIDE -->
+      <div id="tabContentSteps" class="hidden flex-1 overflow-y-auto p-4 space-y-3">
+        <div class="bg-slate-950/60 border border-slate-800 rounded-lg p-3 text-xs text-slate-400">
+          Urutan di bawah ini disusun dari <b>Tahap Paling Dasar (Tier 1)</b> sampai ke item target akhir agar lu bisa menanam secara berurutan di dalam world.
+        </div>
+        <div id="stepsListContainer" class="space-y-3">
+          <!-- Di-render secara dinamis -->
+        </div>
+      </div>
+
+    </aside>
+  </div>
+
+  <!-- MODAL UPLOAD / MANAGE ASSETS (items.txt & .rttex) -->
+  <div id="assetModal" class="hidden fixed inset-0 bg-black/75 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+    <div class="bg-slate-900 border border-slate-700 rounded-2xl max-w-xl w-full p-6 shadow-2xl space-y-5">
+      <div class="flex items-center justify-between border-b border-slate-800 pb-3">
+        <div>
+          <h2 class="text-base font-bold text-white">📂 Asset & Database Manager</h2>
+          <p class="text-xs text-slate-400">Semua file diproses 100% lokal di browser lu & disimpan otomatis di IndexedDB.</p>
+        </div>
+        <button onclick="toggleModal('assetModal', false)" class="text-slate-400 hover:text-white text-lg font-bold px-2">✕</button>
+      </div>
+
+      <!-- Upload items.txt -->
+      <div class="bg-slate-950 border border-slate-800 rounded-xl p-4 space-y-2">
+        <div class="flex items-center justify-between">
+          <label class="text-xs font-bold text-emerald-400 uppercase tracking-wider">1. File Decoded items.txt (Format v26)</label>
+          <span id="modalItemsStatus" class="text-[11px] text-slate-400">Menggunakan 52 sample items</span>
+        </div>
+        <p class="text-xs text-slate-400">Pilih file <code class="text-slate-200">items.txt</code> hasil decode dari <code class="text-slate-200">items.dat</code> (16.148+ items).</p>
+        <input 
+          type="file" 
+          id="itemsTxtInput" 
+          accept=".txt" 
+          class="block w-full text-xs text-slate-300 file:mr-3 file:py-1.5 file:px-3 file:rounded-lg file:border-0 file:text-xs file:font-semibold file:bg-emerald-600 file:text-white hover:file:bg-emerald-500 cursor-pointer"
+        />
+      </div>
+
+      <!-- Upload .rttex files -->
+      <div class="bg-slate-950 border border-slate-800 rounded-xl p-4 space-y-2">
+        <div class="flex items-center justify-between">
+          <label class="text-xs font-bold text-sky-400 uppercase tracking-wider">2. File Texture (.rttex)</label>
+          <span id="modalRttexStatus" class="text-[11px] text-slate-400">0 file dimuat</span>
+        </div>
+        <p class="text-xs text-slate-400">
+          Pilih satu atau banyak file <code class="text-slate-200">.rttex</code> sekaligus (cth: <code class="text-slate-200">tiles_page1.rttex</code>, <code class="text-slate-200">player_shirt.rttex</code>, <code class="text-slate-200">seed.rttex</code>).
+        </p>
+        <input 
+          type="file" 
+          id="rttexFilesInput" 
+          accept=".rttex" 
+          multiple 
+          class="block w-full text-xs text-slate-300 file:mr-3 file:py-1.5 file:px-3 file:rounded-lg file:border-0 file:text-xs file:font-semibold file:bg-sky-600 file:text-white hover:file:bg-sky-500 cursor-pointer"
+        />
+        <div id="loadedRttexList" class="flex flex-wrap gap-1.5 pt-2 max-h-28 overflow-y-auto"></div>
+      </div>
+
+      <!-- Tombol Aksi Modal -->
+      <div class="flex items-center justify-between pt-2 border-t border-slate-800">
+        <button onclick="clearSavedDatabase()" class="text-xs text-rose-400 hover:text-rose-300 underline">
+          Hapus Cache IndexedDB
+        </button>
+        <button onclick="toggleModal('assetModal', false)" class="bg-slate-800 hover:bg-slate-700 text-white text-xs font-semibold px-4 py-2 rounded-lg transition">
+          Selesai & Tutup
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- SCRIPT ENGINE UTAMA -->
+  <script>
+    /*************************************************************************
+     * 1. BUILT-IN SAMPLE DATA (52 Item dari Sample User untuk Instant Demo)
+     *************************************************************************/
+    const SAMPLE_ITEMS_TXT = `
+version\\26
+itemCount\\52
+add_item\\0\\20\\133\\17\\0\\Blank\\tiles_page1.rttex\\91467596\\0\\-1\\16\\1\\1\\0\\0\\4\\8\\0\\1\\200\\\\0\\400\\\\\\\\\\0\\0\\0\\0\\255,255,255,255\\255,255,255,255\\0\\0\\0\\\\\\\\00\\\\09\\0\\0\\00\\\\\\0\\0\\0\\0\\No info.\\00000000\\0\\\\0\\0
+add_item\\1\\4\\4\\19\\0\\Blank Seed\\tiles_page1.rttex\\91467596\\0\\-1\\16\\1\\1\\0\\0\\20\\2\\0\\1\\200\\\\0\\400\\\\\\\\\\0\\0\\0\\0\\255,105,0,0\\255,105,0,0\\31\\0\\0\\\\\\\\00\\\\09\\0\\0\\00\\\\\\0\\0\\0\\0\\No info.\\00000000\\0\\\\0\\0
+add_item\\2\\0\\0\\17\\0\\Dirt\\tiles_page1.rttex\\91467596\\0\\-1\\8\\20\\2\\0\\1\\3\\8\\0\\1\\200\\interface/large/store_buttons2.rttex\\433625137\\400\\\\\\\\\\0\\0\\0\\0\\255,255,255,255\\255,255,255,255\\0\\0\\0\\\\\\\\00\\\\09\\0\\0\\00\\\\\\0\\0\\0\\0\\Yep, it's dirt.\\00000000\\0\\\\0\\0
+add_item\\3\\0\\0\\19\\0\\Dirt Seed\\tiles_page1.rttex\\91467596\\0\\-1\\8\\20\\2\\0\\0\\20\\2\\0\\1\\200\\\\0\\400\\\\\\\\\\1\\2\\1\\2\\255,96,57,19\\255,166,124,82\\31\\0\\0\\\\\\\\00\\\\09\\0\\0\\00\\\\\\0\\0\\0\\0\\No info.\\00000000\\0\\\\0\\0
+add_item\\4\\0\\0\\16\\0\\Lava\\tiles_page1.rttex\\91467596\\0\\-1\\4\\6\\5\\0\\1\\4\\8\\0\\1\\200\\game/player_puncharm.rttex\\915211552\\400\\\\\\\\\\0\\0\\0\\0\\255,255,255,255\\255,255,255,255\\0\\0\\0\\\\\\\\00\\\\09\\0\\0\\00\\\\\\0\\0\\0\\0\\DO NOT TOUCH!\\00000000\\0\\\\0\\0
+add_item\\5\\0\\0\\19\\0\\Lava Seed\\tiles_page1.rttex\\91467596\\0\\-1\\4\\6\\5\\0\\0\\20\\2\\0\\1\\200\\\\0\\400\\\\\\\\\\2\\4\\2\\4\\255,255,40,17\\255,255,187,42\\31\\0\\0\\\\\\\\00\\\\09\\0\\0\\00\\\\\\0\\0\\0\\0\\No info.\\00000000\\0\\\\0\\0
+add_item\\6\\20\\4\\13\\0\\Main Door\\tiles_page1.rttex\\91467596\\0\\-1\\17\\1\\1\\0\\0\\5\\8\\0\\1\\200\\\\0\\400\\\\\\\\\\0\\0\\0\\0\\255,255,255,255\\255,255,255,255\\0\\0\\0\\\\\\\\00\\\\09\\0\\0\\00\\\\\\0\\0\\0\\0\\No info.\\00000000\\0\\\\0\\0
+add_item\\7\\4\\4\\19\\0\\Main Door Seed\\tiles_page1.rttex\\91467596\\0\\-1\\17\\1\\1\\0\\0\\20\\2\\0\\1\\200\\\\0\\400\\\\\\\\\\3\\6\\3\\6\\255,219,219,219\\255,255,209,29\\31\\0\\0\\\\\\\\00\\\\09\\0\\0\\00\\\\\\0\\0\\0\\0\\No info.\\00000000\\0\\\\0\\0
+add_item\\8\\20\\4\\15\\2\\Bedrock\\tiles_page1.rttex\\91467596\\0\\-1\\0\\26\\2\\0\\1\\4\\8\\0\\1\\200\\\\0\\400\\\\\\\\\\0\\0\\0\\0\\255,255,255,255\\255,255,255,255\\0\\0\\0\\\\\\\\00\\\\09\\0\\0\\00\\\\\\0\\0\\0\\0\\No info.\\00000000\\0\\\\0\\0
+add_item\\9\\4\\4\\19\\2\\Bedrock Seed\\tiles_page1.rttex\\91467596\\0\\-1\\0\\26\\2\\0\\0\\20\\2\\0\\1\\200\\\\0\\400\\\\\\\\\\4\\8\\4\\0\\255,137,217,89\\255,233,59,90\\31\\0\\0\\\\\\\\00\\\\09\\0\\0\\00\\\\\\0\\0\\0\\0\\No info.\\00000000\\0\\\\0\\0
+add_item\\10\\0\\0\\17\\2\\Rock\\tiles_page1.rttex\\91467596\\0\\-1\\15\\1\\1\\0\\1\\10\\5\\0\\1\\200\\\\0\\400\\\\\\\\\\0\\0\\0\\0\\255,255,255,255\\255,255,255,255\\0\\0\\0\\\\\\\\00\\\\09\\0\\0\\00\\\\\\0\\0\\0\\0\\I don't feel like I should have to explain what a rock is to you.\\00000000\\0\\\\0\\0
+add_item\\11\\0\\0\\19\\2\\Rock Seed\\tiles_page1.rttex\\91467596\\0\\-1\\15\\1\\1\\0\\0\\20\\2\\0\\1\\200\\\\0\\400\\\\\\\\\\5\\10\\5\\2\\255,128,128,128\\255,200,200,200\\31\\0\\0\\\\\\\\00\\\\09\\0\\0\\00\\\\\\0\\0\\0\\0\\No info.\\00000000\\0\\\\0\\0
+add_item\\12\\2\\0\\2\\2\\Door\\tiles_page1.rttex\\91467596\\0\\-1\\14\\1\\1\\0\\0\\5\\8\\0\\2\\200\\interface/large/news_banner.rttex\\-529301347\\100\\\\\\\\\\0\\0\\0\\0\\255,255,255,255\\255,255,255,255\\0\\0\\0\\\\\\\\00\\\\09\\0\\0\\00\\\\\\0\\0\\0\\0\\These magical doors connect all the worlds in Growtopia.\\00000000\\0\\\\0\\0
+add_item\\13\\0\\0\\19\\2\\Door Seed\\tiles_page1.rttex\\91467596\\0\\-1\\14\\1\\1\\0\\0\\20\\2\\0\\2\\200\\\\0\\400\\\\\\\\\\6\\12\\6\\4\\255,154,107,56\\255,255,209,29\\68\\0\\0\\\\\\\\00\\\\09\\0\\0\\00\\\\\\0\\0\\0\\0\\No info.\\03000F00\\0\\\\0\\0
+add_item\\14\\0\\0\\18\\0\\Cave Background\\tiles_page1.rttex\\91467596\\0\\-1\\24\\26\\2\\0\\0\\3\\4\\0\\1\\200\\interface/large/gui_store_button_overlays8.rttex\\-767216994\\200\\\\\\\\\\0\\0\\0\\0\\255,255,255,255\\255,255,255,255\\0\\0\\0\\\\\\\\00\\\\09\\0\\0\\00\\\\\\0\\0\\0\\0\\Technically, this is also Dirt.\\00000000\\0\\\\0\\0
+add_item\\15\\0\\0\\19\\0\\Cave Background Seed\\tiles_page1.rttex\\91467596\\0\\-1\\24\\26\\2\\0\\0\\20\\2\\0\\1\\200\\\\0\\400\\\\\\\\\\7\\14\\7\\6\\255,28,21,12\\255,75,55,23\\31\\0\\0\\\\\\\\00\\\\09\\0\\0\\00\\\\\\0\\0\\0\\0\\No info.\\00000000\\0\\\\0\\0
+add_item\\16\\0\\0\\17\\0\\Grass\\tiles_page1.rttex\\91467596\\0\\-1\\0\\6\\3\\0\\0\\2\\1\\0\\2\\200\\interface/large/store_buttons/store_buttons38.rttex\\1193783505\\200\\\\\\\\\\0\\0\\0\\0\\255,255,255,255\\255,255,255,255\\0\\0\\0\\\\\\\\00\\\\09\\0\\0\\00\\\\\\0\\0\\0\\0\\I love the smell of freshly punched Grass in the morning!\\00000000\\0\\\\0\\0
+add_item\\17\\0\\0\\19\\0\\Grass Seed\\tiles_page1.rttex\\91467596\\0\\-1\\0\\6\\3\\0\\0\\20\\2\\0\\2\\200\\\\0\\400\\\\\\\\\\8\\0\\0\\0\\255,73,157,45\\255,135,217,89\\68\\0\\0\\\\\\\\00\\\\09\\0\\0\\00\\\\\\0\\0\\0\\0\\No info.\\03000B00\\0\\\\0\\0
+add_item\\20\\2\\0\\10\\0\\Sign\\tiles_page1.rttex\\91467596\\0\\-1\\21\\0\\1\\0\\0\\5\\8\\0\\2\\200\\\\0\\400\\\\\\\\\\0\\0\\0\\0\\255,255,255,255\\255,255,255,255\\0\\0\\0\\\\\\\\00\\\\09\\0\\0\\00\\\\\\0\\0\\0\\0\\Write stuff on it to tell your friends!\\00000000\\0\\\\0\\0
+add_item\\21\\0\\0\\19\\0\\Sign Seed\\tiles_page1.rttex\\91467596\\0\\-1\\21\\0\\1\\0\\0\\20\\2\\0\\2\\200\\\\0\\400\\\\\\\\\\10\\4\\2\\4\\255,157,141,69\\255,204,189,116\\68\\0\\0\\\\\\\\00\\\\09\\0\\0\\00\\\\\\0\\0\\0\\0\\No info.\\0F000B00\\0\\\\0\\0
+add_item\\22\\0\\0\\17\\0\\Daisy\\tiles_page1.rttex\\91467596\\0\\-1\\3\\1\\1\\0\\0\\3\\4\\0\\3\\200\\player_tribute.txt\\0\\200\\\\\\\\\\0\\0\\0\\0\\255,255,255,255\\255,255,255,255\\0\\0\\0\\\\\\\\00\\\\09\\0\\0\\00\\\\\\0\\0\\0\\0\\Bellis Perennis, the common European daisy.\\00000000\\0\\\\0\\0
+add_item\\23\\0\\0\\19\\0\\Daisy Seed\\tiles_page1.rttex\\91467596\\0\\-1\\3\\1\\1\\0\\0\\20\\2\\0\\3\\200\\\\0\\400\\\\\\\\\\11\\6\\3\\6\\255,80,255,80\\255,255,255,0\\117\\0\\0\\\\\\\\00\\\\09\\0\\0\\00\\\\\\0\\0\\0\\0\\No info.\\11000300\\0\\\\0\\0
+add_item\\24\\3\\0\\10\\0\\Pointy Sign\\tiles_page1.rttex\\91467596\\0\\-1\\22\\0\\1\\0\\0\\4\\8\\0\\4\\200\\\\0\\400\\\\\\\\\\0\\0\\0\\0\\255,255,255,255\\255,255,255,255\\0\\0\\0\\\\\\\\00\\\\09\\0\\0\\00\\\\\\0\\0\\0\\0\\This sign includes a bit of added information - an arrow!\\00000000\\0\\\\0\\0
+add_item\\25\\0\\0\\19\\0\\Pointy Sign Seed\\tiles_page1.rttex\\91467596\\0\\-1\\22\\0\\1\\0\\0\\20\\2\\0\\4\\200\\\\0\\400\\\\\\\\\\12\\8\\4\\0\\255,157,141,69\\255,204,189,116\\184\\0\\0\\\\\\\\00\\\\09\\0\\0\\00\\\\\\0\\0\\0\\0\\No info.\\0D001500\\0\\\\0\\0
+add_item\\26\\3\\0\\10\\0\\Crappy Sign\\tiles_page1.rttex\\91467596\\0\\-1\\24\\0\\1\\0\\0\\4\\8\\0\\3\\200\\\\0\\400\\\\\\\\\\0\\0\\0\\0\\255,255,255,255\\255,255,255,255\\0\\0\\0\\\\\\\\00\\\\09\\0\\0\\00\\\\\\0\\0\\0\\0\\This is not the greatest sign, but it'll do in a pinch.\\00000000\\0\\\\0\\0
+add_item\\27\\0\\0\\19\\0\\Crappy Sign Seed\\tiles_page1.rttex\\91467596\\0\\-1\\24\\0\\1\\0\\0\\20\\2\\0\\3\\200\\\\0\\400\\\\\\\\\\13\\10\\5\\2\\255,97,68,43\\255,192,168,146\\117\\0\\0\\\\\\\\00\\\\09\\0\\0\\00\\\\\\0\\0\\0\\0\\No info.\\0D000300\\0\\\\0\\0
+add_item\\28\\3\\0\\10\\0\\Danger Sign\\tiles_page1.rttex\\91467596\\0\\-1\\23\\0\\1\\0\\0\\4\\8\\0\\5\\200\\\\0\\400\\\\\\\\\\0\\0\\0\\0\\255,255,255,255\\255,255,255,255\\0\\0\\0\\\\\\\\00\\\\09\\0\\0\\00\\\\\\0\\0\\0\\0\\Use this sign to warn your friends of terrible space monkeys.\\00000000\\0\\\\0\\0
+add_item\\29\\0\\0\\19\\0\\Danger Sign Seed\\tiles_page1.rttex\\91467596\\0\\-1\\23\\0\\1\\0\\0\\20\\2\\0\\5\\200\\\\0\\400\\\\\\\\\\14\\12\\6\\4\\255,97,68,43\\255,192,168,146\\275\\0\\0\\\\\\\\00\\\\09\\0\\0\\00\\\\\\0\\0\\0\\0\\No info.\\05001900\\0\\\\0\\0
+add_item\\30\\2\\0\\2\\0\\Dungeon Door\\tiles_page1.rttex\\91467596\\0\\-1\\19\\1\\1\\0\\0\\4\\8\\0\\8\\200\\\\0\\400\\\\\\\\\\0\\0\\0\\0\\255,255,255,255\\255,255,255,255\\0\\0\\0\\\\\\\\00\\\\09\\0\\0\\00\\\\\\0\\0\\0\\0\\This works like a regular door, but it looks much more medieval.\\00000000\\0\\\\0\\0
+add_item\\31\\0\\0\\19\\0\\Dungeon Door Seed\\tiles_page1.rttex\\91467596\\0\\-1\\19\\1\\1\\0\\0\\20\\2\\0\\8\\200\\\\0\\400\\\\\\\\\\15\\14\\7\\6\\255,154,107,56\\255,194,194,194\\752\\0\\0\\\\\\\\00\\\\09\\0\\0\\00\\\\\\0\\0\\0\\0\\No info.\\0D003700\\0\\\\0\\0
+`.trim();
+
+    /*************************************************************************
+     * 2. STATE GLOBAL & INDEXED-DB STORAGE
+     *************************************************************************/
+    const itemsMap = new Map();       // itemId (number) -> Object Item
+    const rttexCanvases = new Map();  // namafile.rttex (lowercase) -> HTMLCanvasElement
+    const iconCache = new Map();      // itemId -> DataURL (PNG 32x32)
+    const skippedSeeds = new Set();   // Set berisi seedId yang di-mark "Beli Langsung"
+    const seedPrices = new Map();     // seedId -> { seedsPerWl: number, wlAmount: number, checked: boolean }
+    
+    let currentSelectedItemId = 28;   // Default buka "Danger Sign" (ID 28)
+
+    // Setup IndexedDB agar user tidak perlu upload ulang tiap refresh
+    const DB_NAME = 'GTMassingArchitectDB';
+    const DB_VERSION = 1;
+    let idb = null;
+
+    function initIndexedDB() {
+      return new Promise((resolve) => {
+        const req = indexedDB.open(DB_NAME, DB_VERSION);
+        req.onupgradeneeded = (e) => {
+          const db = e.target.result;
+          if (!db.objectStoreNames.contains('files')) {
+            db.createObjectStore('files');
+          }
+        };
+        req.onsuccess = (e) => {
+          idb = e.target.result;
+          resolve(idb);
+        };
+        req.onerror = () => resolve(null);
+      });
+    }
+
+    function saveToIDB(key, val) {
+      if (!idb) return;
+      const tx = idb.transaction('files', 'readwrite');
+      tx.objectStore('files').put(val, key);
+    }
+
+    function getFromIDB(key) {
+      return new Promise((resolve) => {
+        if (!idb) return resolve(null);
+        const tx = idb.transaction('files', 'readonly');
+        const req = tx.objectStore('files').get(key);
+        req.onsuccess = () => resolve(req.result || null);
+        req.onerror = () => resolve(null);
+      });
+    }
+
+    async function clearSavedDatabase() {
+      if (!idb) return;
+      const tx = idb.transaction('files', 'readwrite');
+      tx.objectStore('files').clear();
+      tx.oncomplete = () => {
+        alert('Cache IndexedDB berhasil dihapus! Halaman akan dimuat ulang.');
+        location.reload();
+      };
+    }
+
+    /*************************************************************************
+     * 3. PARSER ITEMS.TXT & DECODER HEX RESEP SPLICING (data_version_23)
+     *************************************************************************/
+    function decodeSpliceHex(hexStr) {
+      if (!hexStr || hexStr.length !== 8 || hexStr === '00000000') return null;
+      // Format Little-Endian 4-byte: [B0 B1] = Seed 1, [B2 B3] = Seed 2
+      const b0 = parseInt(hexStr.substring(0, 2), 16);
+      const b1 = parseInt(hexStr.substring(2, 4), 16);
+      const b2 = parseInt(hexStr.substring(4, 6), 16);
+      const b3 = parseInt(hexStr.substring(6, 8), 16);
+
+      const seed1 = b0 | (b1 << 8);
+      const seed2 = b2 | (b3 << 8);
+      if (!seed1 || !seed2) return null;
+      return [seed1, seed2];
+    }
+
+    function parseItemsTxt(rawText, isCustomFile = false) {
+      itemsMap.clear();
+      iconCache.clear();
+
+      const lines = rawText.split(/\r?\n/);
+      let count = 0;
+
+      for (let i = 0; i < lines.length; i++) {
+        const line = lines[i].trim();
+        if (!line.startsWith('add_item\\')) continue;
+
+        const cols = line.split('\\');
+        if (cols.length < 54) continue;
+
+        const id = parseInt(cols[1], 10);
+        if (isNaN(id)) continue;
+
+        const rawBreakHits = cols[16] || '0';
+        const breakHits = rawBreakHits.endsWith('r') 
+          ? Math.ceil(parseInt(rawBreakHits, 10) / 6) 
+          : parseInt(rawBreakHits, 10);
+
+        const texturePath = cols[7] || '';
+        const textureFileName = texturePath.split('/').pop().toLowerCase();
+
+        const itemObj = {
+          id,
+          editableType: parseInt(cols[2], 10) || 0,
+          category: parseInt(cols[3], 10) || 0,
+          actionType: parseInt(cols[4], 10) || 0,
+          name: cols[6] || `Item #${id}`,
+          texturePath,
+          textureFileName,
+          texX: parseInt(cols[11], 10) || 0,
+          texY: parseInt(cols[12], 10) || 0,
+          spreadType: parseInt(cols[13], 10) || 0,
+          breakHits: isNaN(breakHits) ? 0 : breakHits,
+          dropChance: parseInt(cols[17], 10) || 0,
+          rarity: parseInt(cols[19], 10) || 1,
+          seedBase: parseInt(cols[28], 10) || 0,
+          seedOverlay: parseInt(cols[29], 10) || 0,
+          seedColor: cols[32] || '255,255,255,255',
+          seedOverlayColor: cols[33] || '255,255,255,255',
+          growTime: parseInt(cols[34], 10) || 0,
+          description: cols[52] || '',
+          spliceHex: cols[53] || '00000000',
+          spliceSeeds: decodeSpliceHex(cols[53]) // [seedId1, seedId2] atau null
+        };
+
+        itemsMap.set(id, itemObj);
+        count++;
+      }
+
+      // Update UI Status
+      const badge = document.getElementById('dbStatusBadge');
+      const modalStatus = document.getElementById('modalItemsStatus');
+      if (isCustomFile) {
+        badge.textContent = `Loaded: ${count.toLocaleString()} Items`;
+        badge.className = 'text-[11px] font-medium px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 border border-emerald-500/30';
+        modalStatus.textContent = `${count.toLocaleString()} items aktif di memori`;
+      } else {
+        badge.textContent = `Demo Data (${count} Items)`;
+      }
+    }
+
+    /*************************************************************************
+     * 4. DECODER BINARY .RTTEX (RTPACK ZLIB + RTTXTR HEADER + VERTICAL FLIP)
+     *************************************************************************/
+    async function decodeRttexBuffer(arrayBuffer, fileName) {
+      let bytes = new Uint8Array(arrayBuffer);
+      const magic = new TextDecoder('ascii').decode(bytes.slice(0, 6));
+
+      // Jika file .rttex dikompresi dengan RTPACK (Zlib), decompress dulu menggunakan Pako
+      if (magic === 'RTPACK') {
+        const compressedPayload = bytes.slice(32); // Header RTPACK = 32 bytes
+        bytes = window.pako.inflate(compressedPayload);
+      }
+
+      const headerMagic = new TextDecoder('ascii').decode(bytes.slice(0, 6));
+      if (headerMagic !== 'RTTXTR') {
+        throw new Error(`File ${fileName} bukan format RTTXTR yang valid (Header: ${headerMagic})`);
+      }
+
+      const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+      const height = dv.getInt32(8, true);
+      const width = dv.getInt32(12, true);
+      const usesAlpha = bytes[28];
+      const bpp = usesAlpha ? 4 : 3;
+
+      // Pixel data dimulai pada offset byte ke-124 (setelah header RTTXTR 124 bytes)
+      const pixelDataOffset = 124;
+      const canvas = document.createElement('canvas');
+      canvas.width = width;
+      canvas.height = height;
+      const ctx = canvas.getContext('2d');
+      const imgData = ctx.createImageData(width, height);
+      const dst = imgData.data;
+
+      // Proton SDK menyimpan tekstur dari bawah ke atas (Bottom-Up OpenGL style),
+      // jadi baris Y harus dibalik: (height - 1 - y)
+      for (let y = 0; y < height; y++) {
+        const srcRowStart = pixelDataOffset + ((height - 1 - y) * width * bpp);
+        const dstRowStart = y * width * 4;
+
+        for (let x = 0; x < width; x++) {
+          const srcIdx = srcRowStart + (x * bpp);
+          const dstIdx = dstRowStart + (x * 4);
+
+          dst[dstIdx]     = bytes[srcIdx];     // R
+          dst[dstIdx + 1] = bytes[srcIdx + 1]; // G
+          dst[dstIdx + 2] = bytes[srcIdx + 2]; // B
+          dst[dstIdx + 3] = bpp === 4 ? bytes[srcIdx + 3] : 255; // A
+        }
+      }
+
+      ctx.putImageData(imgData, 0, 0);
+      const cleanName = fileName.split('/').pop().toLowerCase();
+      rttexCanvases.set(cleanName, canvas);
+      iconCache.clear(); // Reset cache icon agar di-render ulang dengan texture baru
+      updateRttexBadges();
+    }
+
+    function updateRttexBadges() {
+      const count = rttexCanvases.size;
+      document.getElementById('rttexCountBadge').textContent = `${count} RTTEX`;
+      document.getElementById('modalRttexStatus').textContent = `${count} file .rttex aktif`;
+
+      const listEl = document.getElementById('loadedRttexList');
+      listEl.innerHTML = '';
+      for (const name of rttexCanvases.keys()) {
+        const pill = document.createElement('span');
+        pill.className = 'text-[10px] bg-sky-500/20 text-sky-300 border border-sky-500/30 px-2 py-0.5 rounded';
+        pill.textContent = name;
+        listEl.appendChild(pill);
+      }
+    }
+
+    /*************************************************************************
+     * 5. SPRITE SLICER 32x32 & FALLBACK PROCEDURAL ICON GENERATOR
+     *************************************************************************/
+    function getItemIconDataUrl(item) {
+      if (!item) return '';
+      if (iconCache.has(item.id)) return iconCache.get(item.id);
+
+      // Untuk menampilkan icon blok utama, jika item ini adalah Seed (ganjil),
+      // kita cek juga pasangan blok-nya (id - 1) untuk referensi tekstur blok
+      const blockItem = (item.id % 2 === 1 && itemsMap.has(item.id - 1)) 
+        ? itemsMap.get(item.id - 1) 
+        : item;
+
+      const rttexCanvas = rttexCanvases.get(blockItem.textureFileName);
+
+      const outCanvas = document.createElement('canvas');
+      outCanvas.width = 32;
+      outCanvas.height = 32;
+      const ctx = outCanvas.getContext('2d');
+      ctx.imageSmoothingEnabled = false;
+
+      if (rttexCanvas) {
+        // Penanganan spread_type Growtopia agar memotong sub-tile "Single Block" yang utuh:
+        // spread_type 2 (Dirt, Cave BG, Bedrock) & spread_type 5 (Lava) memiliki single-block icon di offset (+4, +1)
+        // spread_type 3 (Grass) memiliki single-block icon di offset (+3, 0)
+        let tileX = blockItem.texX;
+        let tileY = blockItem.texY;
+
+        if (blockItem.spreadType === 2 || blockItem.spreadType === 5) {
+          tileX += 4;
+          tileY += 1;
+        } else if (blockItem.spreadType === 3) {
+          tileX += 3;
+        }
+
+        // Validasi agar tidak keluar batas kanvas .rttex
+        if ((tileX * 32) + 32 > rttexCanvas.width || (tileY * 32) + 32 > rttexCanvas.height) {
+          tileX = blockItem.texX;
+          tileY = blockItem.texY;
+        }
+
+        ctx.drawImage(rttexCanvas, tileX * 32, tileY * 32, 32, 32, 0, 0, 32, 32);
+      } else {
+        // FALLBACK VISUAL: Jika user belum meng-upload file .rttex terkait,
+        // buat ikon pixel-art otomatis menggunakan warna asli dari `seed_color` & `seed_overlay_color` di items.txt!
+        const seedRef = (item.id % 2 === 0 && itemsMap.has(item.id + 1)) 
+          ? itemsMap.get(item.id + 1) 
+          : item;
+
+        const parseRgba = (str) => {
+          const p = (str || '255,100,150,255').split(',').map(Number);
+          return p.length === 4 ? `rgb(${p[1]}, ${p[2]}, ${p[3]})` : '#10b981';
+        };
+
+        const c1 = parseRgba(seedRef.seedColor);
+        const c2 = parseRgba(seedRef.seedOverlayColor);
+
+        // Background kotak blok/seed
+        ctx.fillStyle = c1;
+        ctx.fillRect(2, 2, 28, 28);
+        ctx.fillStyle = c2;
+        ctx.fillRect(6, 6, 20, 20);
+
+        // Border pixel art
+        ctx.strokeStyle = 'rgba(0,0,0,0.6)';
+        ctx.lineWidth = 2;
+        ctx.strokeRect(2, 2, 28, 28);
+
+        // Huruf inisial item di tengah
+        ctx.fillStyle = '#ffffff';
+        ctx.font = 'bold 12px monospace';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        const initials = blockItem.name.split(' ').map(w => w[0]).join('').substring(0, 2).toUpperCase();
+        ctx.fillText(initials, 16, 17);
+      }
+
+      const dataUrl = outCanvas.toDataURL();
+      iconCache.set(item.id, dataUrl);
+      return dataUrl;
+    }
+
+    /*************************************************************************
+     * 6. ENGINE REKURSIF POHON SILSILAH, KALKULATOR MASSING & SHOPPING LIST
+     *************************************************************************/
+    function formatDuration(seconds) {
+      if (!seconds || seconds <= 0) return '0s';
+      const h = Math.floor(seconds / 3600);
+      const m = Math.floor((seconds % 3600) / 60);
+      const s = seconds % 60;
+      const parts = [];
+      if (h > 0) parts.push(`${h}j`);
+      if (m > 0) parts.push(`${m}m`);
+      if (s > 0 && h === 0) parts.push(`${s}d`);
+      return parts.join(' ');
+    }
+
+    // Membangun struktur Node Pohon dari Target Item
+    function buildMassingPlan(rootBlockOrSeedId, targetTrees, yieldRate) {
+      // Pastikan kita selalu merujuk ke pasangan Seed (ID Ganjil) untuk mengecek resep splicing
+      const rootSeedId = (rootBlockOrSeedId % 2 === 0) ? rootBlockOrSeedId + 1 : rootBlockOrSeedId;
+      const rootBlockId = rootSeedId - 1;
+
+      const shoppingListMap = new Map(); // seedId -> totalSeedsNeeded
+      const stepsByTier = new Map();     // depthTier -> Map(seedId -> { treesNeeded, seedsNeeded, ing1, ing2 })
+      let totalTreesPlanted = 0;
+
+      function traverse(seedId, requiredOutputCount, isRootNode = false, visited = new Set()) {
+        const seedItem = itemsMap.get(seedId);
+        const blockItem = itemsMap.get(seedId - 1) || seedItem;
+
+        // Cegah infinite loop jika ada data modifikasi di items.txt
+        if (!seedItem || visited.has(seedId)) {
+          return { seedId, blockItem, seedItem, isBase: true, requiredSeeds: requiredOutputCount, treesToPlant: 0, tier: 0 };
+        }
+
+        const nextVisited = new Set(visited);
+        nextVisited.add(seedId);
+
+        const hasRecipe = Array.isArray(seedItem.spliceSeeds) && seedItem.spliceSeeds.length === 2;
+        const isSkipped = !isRootNode && skippedSeeds.has(seedId);
+
+        // Jika tidak punya resep splicing ATAU di-set "Beli Langsung (Skip)" oleh user
+        if (!hasRecipe || isSkipped) {
+          const prevQty = shoppingListMap.get(seedId) || 0;
+          shoppingListMap.set(seedId, prevQty + requiredOutputCount);
+
+          return {
+            seedId,
+            blockItem,
+            seedItem,
+            isBase: !hasRecipe,
+            isSkipped,
+            requiredSeeds: requiredOutputCount,
+            treesToPlant: 0,
+            tier: 0,
+            children: []
+          };
+        }
+
+        // Jika harus dibuat melalui Splicing:
+        // Di node Root, targetTrees adalah jumlah pohon yang ditanam langsung.
+        // Di sub-node, untuk menghasilkan `requiredOutputCount` seed, butuh `ceil(requiredOutputCount / yieldRate)` pohon.
+        const treesToPlant = isRootNode 
+          ? requiredOutputCount 
+          : Math.ceil(requiredOutputCount / yieldRate);
+
+        totalTreesPlanted += treesToPlant;
+
+        const [ingSeed1, ingSeed2] = seedItem.spliceSeeds;
+
+        // Kalau 2 bahan seed-nya kembar (walaupun jarang di GT), digabung kebutuhannya
+        const child1 = traverse(ingSeed1, treesToPlant, false, nextVisited);
+        const child2 = traverse(ingSeed2, treesToPlant, false, nextVisited);
+
+        const currentTier = Math.max(child1.tier, child2.tier) + 1;
+
+        // Catat ke dalam Step-by-Step Massing berdasarkan Tier
+        if (!stepsByTier.has(currentTier)) {
+          stepsByTier.set(currentTier, new Map());
+        }
+        const tierGroup = stepsByTier.get(currentTier);
+        if (!tierGroup.has(seedId)) {
+          tierGroup.set(seedId, {
+            seedId,
+            blockItem,
+            seedItem,
+            treesToPlant: 0,
+            seedsProduced: 0,
+            ing1: ingSeed1,
+            ing2: ingSeed2
+          });
+        }
+        const entry = tierGroup.get(seedId);
+        entry.treesToPlant += treesToPlant;
+        entry.seedsProduced += requiredOutputCount;
+
+        return {
+          seedId,
+          blockItem,
+          seedItem,
+          isBase: false,
+          isSkipped: false,
+          requiredSeeds: requiredOutputCount,
+          treesToPlant,
+          tier: currentTier,
+          children: [child1, child2]
+        };
+      }
+
+      const treeData = traverse(rootSeedId, targetTrees, true);
+      return { treeData, shoppingListMap, stepsByTier, totalTreesPlanted, rootBlockId, rootSeedId };
+    }
+
+    /*************************************************************************
+     * 7. RENDERER UI: POHON SILSILAH, SHOPPING LIST, DAN PROFIT KALKULATOR
+     *************************************************************************/
+    let latestPlanResult = null;
+
+    function renderAll() {
+      const targetTrees = Math.max(1, parseInt(document.getElementById('targetTreesInput').value, 10) || 200);
+      const yieldRate = Math.max(0.05, parseFloat(document.getElementById('yieldRateInput').value) || 1.0);
+
+      latestPlanResult = buildMassingPlan(currentSelectedItemId, targetTrees, yieldRate);
+
+      renderTreeNodes(latestPlanResult.treeData, true);
+      renderShoppingListAndStats(latestPlanResult);
+      renderStepByStepGuide(latestPlanResult);
+      recalculateProfit();
+    }
+
+    // Render Visual Pohon Silsilah (HTML Tree)
+    function renderTreeNodes(node, isRoot = false) {
+      const container = document.getElementById('treeRoot');
+      if (isRoot) container.innerHTML = '';
+
+      function createNodeHtml(n, rootFlag) {
+        const li = document.createElement('li');
+        const itemTitle = n.blockItem ? n.blockItem.name : `Seed #${n.seedId}`;
+        const rarity = n.blockItem ? n.blockItem.rarity : 1;
+        const growTimeStr = n.seedItem ? formatDuration(n.seedItem.growTime) : '0s';
+        const iconUrl = getItemIconDataUrl(n.blockItem || n.seedItem);
+
+        // Warna border kartu berdasarkan status (Target Utama vs Sub-resep vs Base Seed)
+        let borderClass = 'border-slate-700 bg-slate-900/95';
+        let badgeHtml = '';
+
+        if (rootFlag) {
+          borderClass = 'border-emerald-500 bg-slate-900 ring-2 ring-emerald-500/20';
+          badgeHtml = `<span class="px-2 py-0.5 text-[10px] font-bold rounded-full bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">🎯 TARGET AKHIR</span>`;
+        } else if (n.isBase) {
+          borderClass = 'border-amber-500/60 bg-slate-900/90';
+          badgeHtml = `<span class="px-2 py-0.5 text-[10px] font-bold rounded-full bg-amber-500/20 text-amber-300 border border-amber-500/30">🌱 BASE SEED</span>`;
+        } else if (n.isSkipped) {
+          borderClass = 'border-sky-500/70 bg-slate-900/90';
+          badgeHtml = `<span class="px-2 py-0.5 text-[10px] font-bold rounded-full bg-sky-500/20 text-sky-300 border border-sky-500/30">🛒 BELI JADI</span>`;
+        } else {
+          badgeHtml = `<span class="px-2 py-0.5 text-[10px] font-semibold rounded-full bg-slate-800 text-slate-300">Tier ${n.tier}</span>`;
+        }
+
+        const card = document.createElement('div');
+        card.className = `inline-block w-52 rounded-xl border ${borderClass} p-3 shadow-xl text-left transition hover:scale-[1.02]`;
+
+        // Tombol Skip / Unskip untuk cabang menengah
+        let actionBtnHtml = '';
+        if (!rootFlag && !n.isBase) {
+          if (n.isSkipped) {
+            actionBtnHtml = `
+              <button onclick="toggleSkipSeed(${n.seedId})" class="mt-2.5 w-full py-1 px-2 rounded bg-sky-600/30 hover:bg-sky-600/50 border border-sky-500/40 text-sky-200 text-[11px] font-semibold transition">
+                🔄 Buat Sendiri (Buka Resep)
+              </button>`;
+          } else {
+            actionBtnHtml = `
+              <button onclick="toggleSkipSeed(${n.seedId})" class="mt-2.5 w-full py-1 px-2 rounded bg-slate-800 hover:bg-amber-500/20 hover:border-amber-500/40 hover:text-amber-300 border border-slate-700 text-slate-300 text-[11px] font-medium transition">
+                🛒 Beli Langsung (Skip)
+              </button>`;
+          }
+        }
+
+        card.innerHTML = `
+          <div class="flex items-center justify-between mb-2">
+            ${badgeHtml}
+            <span class="text-[10px] text-slate-400 font-mono">ID: ${n.blockItem ? n.blockItem.id : n.seedId}</span>
+          </div>
+          <div class="flex items-center gap-2.5">
+            <img src="${iconUrl}" alt="${itemTitle}" class="w-10 h-10 rounded-lg bg-slate-950 p-1 border border-slate-800 pixelated shrink-0" />
+            <div class="overflow-hidden">
+              <div class="font-bold text-xs text-white truncate" title="${itemTitle}">${itemTitle}</div>
+              <div class="text-[11px] text-slate-400">Rarity: <b class="text-amber-300">${rarity === 999 ? 'N/A' : rarity}</b></div>
+              <div class="text-[10px] text-slate-500">⏱️ ${growTimeStr}</div>
+            </div>
+          </div>
+          <div class="mt-2.5 pt-2 border-t border-slate-800/90 space-y-1 text-[11px]">
+            ${rootFlag ? `
+              <div class="flex justify-between">
+                <span class="text-slate-400">Target Tanam:</span>
+                <span class="font-bold text-emerald-400">${n.treesToPlant.toLocaleString()} Pohon</span>
+              </div>
+            ` : n.isBase || n.isSkipped ? `
+              <div class="flex justify-between">
+                <span class="text-slate-400">Butuh Beli:</span>
+                <span class="font-bold text-amber-400">${n.requiredSeeds.toLocaleString()} Seed</span>
+              </div>
+            ` : `
+              <div class="flex justify-between">
+                <span class="text-slate-400">Butuh Seed:</span>
+                <span class="font-bold text-sky-400">${n.requiredSeeds.toLocaleString()} Seed</span>
+              </div>
+              <div class="flex justify-between">
+                <span class="text-slate-400">Tanam Pohon:</span>
+                <span class="font-bold text-emerald-400">${n.treesToPlant.toLocaleString()} Pohon</span>
+              </div>
+            `}
+          </div>
+          ${actionBtnHtml}
+        `;
+
+        li.appendChild(card);
+
+        if (n.children && n.children.length > 0) {
+          const ul = document.createElement('ul');
+          for (const ch of n.children) {
+            ul.appendChild(createNodeHtml(ch, false));
+          }
+          li.appendChild(ul);
+        }
+
+        return li;
+      }
+
+      const rootUl = document.createElement('ul');
+      rootUl.appendChild(createNodeHtml(node, true));
+      container.appendChild(rootUl);
+    }
+
+    function toggleSkipSeed(seedId) {
+      if (skippedSeeds.has(seedId)) {
+        skippedSeeds.delete(seedId);
+      } else {
+        skippedSeeds.add(seedId);
+      }
+      renderAll();
+    }
+
+    function resetSkippedNodes() {
+      skippedSeeds.clear();
+      renderAll();
+    }
+
+    // Render Shopping List & Statistik
+    function renderShoppingListAndStats(plan) {
+      document.getElementById('statTotalTrees').textContent = plan.totalTreesPlanted.toLocaleString();
+      document.getElementById('statBaseTypes').textContent = plan.shoppingListMap.size.toLocaleString();
+
+      // Hitung akumulasi waktu tumbuh paralel per Tier
+      let totalSequentialTime = 0;
+      for (const [, tierMap] of plan.stepsByTier.entries()) {
+        let maxTimeInTier = 0;
+        for (const step of tierMap.values()) {
+          if (step.seedItem && step.seedItem.growTime > maxTimeInTier) {
+            maxTimeInTier = step.seedItem.growTime;
+          }
+        }
+        totalSequentialTime += maxTimeInTier;
+      }
+      document.getElementById('statTotalGrowTime').textContent = formatDuration(totalSequentialTime);
+
+      const listEl = document.getElementById('shoppingListContainer');
+      listEl.innerHTML = '';
+
+      if (plan.shoppingListMap.size === 0) {
+        listEl.innerHTML = `<div class="text-xs text-slate-500 italic p-3 bg-slate-950 rounded-lg">Item ini adalah Base Seed dan tidak memiliki resep splicing.</div>`;
+        return;
+      }
+
+      for (const [seedId, totalQty] of plan.shoppingListMap.entries()) {
+        const seedItem = itemsMap.get(seedId);
+        const blockItem = itemsMap.get(seedId - 1) || seedItem;
+        const iconUrl = getItemIconDataUrl(blockItem);
+
+        // Ambil harga default (misal base seed rata-rata 200/1 WL, kalau skipped item 20/1 WL)
+        if (!seedPrices.has(seedId)) {
+          const isSkipped = skippedSeeds.has(seedId);
+          seedPrices.set(seedId, {
+            seedsPerWl: isSkipped ? 20 : 200,
+            wlAmount: 1,
+            checked: false
+          });
+        }
+        const priceState = seedPrices.get(seedId);
+        const itemCostWl = (totalQty / Math.max(0.01, priceState.seedsPerWl)) * priceState.wlAmount;
+
+        const row = document.createElement('div');
+        row.className = `flex items-center justify-between gap-2 p-2.5 rounded-xl border transition ${
+          priceState.checked 
+            ? 'bg-slate-950/40 border-slate-800/60 opacity-60' 
+            : 'bg-slate-950 border-slate-800'
+        }`;
+
+        row.innerHTML = `
+          <div class="flex items-center gap-2.5 min-w-0 flex-1">
+            <input 
+              type="checkbox" 
+              ${priceState.checked ? 'checked' : ''} 
+              onchange="toggleSeedChecked(${seedId}, this.checked)"
+              class="w-4 h-4 rounded accent-emerald-500 cursor-pointer shrink-0"
+            />
+            <img src="${iconUrl}" class="w-8 h-8 rounded bg-slate-900 p-0.5 border border-slate-800 pixelated shrink-0" />
+            <div class="min-w-0 flex-1">
+              <div class="text-xs font-bold text-white truncate ${priceState.checked ? 'line-through text-slate-400' : ''}">
+                ${seedItem ? seedItem.name : `Seed #${seedId}`}
+              </div>
+              <div class="text-[11px] text-amber-400 font-semibold">
+                Butuh: ${totalQty.toLocaleString()} Seed
+              </div>
+            </div>
+          </div>
+
+          <!-- Input Rate Harga Seed per WL -->
+          <div class="flex flex-col items-end gap-1 shrink-0">
+            <div class="flex items-center gap-1 text-xs">
+              <input 
+                type="number" 
+                min="0.1" 
+                step="1" 
+                value="${priceState.seedsPerWl}"
+                oninput="updateSeedPrice(${seedId}, 'seedsPerWl', this.value)"
+                class="w-14 bg-slate-900 border border-slate-700 rounded px-1.5 py-0.5 text-right font-bold text-sky-400 focus:outline-none focus:border-sky-500"
+                title="Jumlah Seed"
+              />
+              <span class="text-slate-500">/</span>
+              <input 
+                type="number" 
+                min="1" 
+                step="1" 
+                value="${priceState.wlAmount}"
+                oninput="updateSeedPrice(${seedId}, 'wlAmount', this.value)"
+                class="w-10 bg-slate-900 border border-slate-700 rounded px-1 py-0.5 text-center font-bold text-amber-400 focus:outline-none focus:border-amber-500"
+                title="Jumlah WL"
+              />
+              <span class="text-[10px] font-bold text-amber-400">WL</span>
+            </div>
+            <div id="seedCostLabel_${seedId}" class="text-[10px] text-rose-400 font-semibold">
+              Modal: ${itemCostWl.toFixed(1)} WL
+            </div>
+          </div>
+        `;
+
+        listEl.appendChild(row);
+      }
+    }
+
+    function toggleSeedChecked(seedId, isChecked) {
+      if (seedPrices.has(seedId)) {
+        seedPrices.get(seedId).checked = isChecked;
+        renderShoppingListAndStats(latestPlanResult);
+      }
+    }
+
+    function updateSeedPrice(seedId, field, value) {
+      if (!seedPrices.has(seedId)) return;
+      const num = parseFloat(value) || 1;
+      seedPrices.get(seedId)[field] = Math.max(0.01, num);
+
+      const totalQty = latestPlanResult.shoppingListMap.get(seedId) || 0;
+      const st = seedPrices.get(seedId);
+      const cost = (totalQty / st.seedsPerWl) * st.wlAmount;
+      const lbl = document.getElementById(`seedCostLabel_${seedId}`);
+      if (lbl) lbl.textContent = `Modal: ${cost.toFixed(1)} WL`;
+
+      recalculateProfit();
+    }
+
+    // Format angka WL ke kombinasi DL + WL agar mudah dibaca pemain GT
+    function formatWlDl(wlFloat) {
+      const absWl = Math.abs(wlFloat);
+      const dls = Math.floor(absWl / 100);
+      const remWls = (absWl % 100).toFixed(1);
+      if (dls > 0) {
+        return `${wlFloat.toFixed(1)} WL (${dls} DL ${remWls} WL)`;
+      }
+      return `${wlFloat.toFixed(1)} WL`;
+    }
+
+    function recalculateProfit() {
+      if (!latestPlanResult) return;
+
+      // 1. Hitung Total Modal Beli Seed
+      let totalSeedCostWl = 0;
+      for (const [seedId, totalQty] of latestPlanResult.shoppingListMap.entries()) {
+        const st = seedPrices.get(seedId) || { seedsPerWl: 200, wlAmount: 1 };
+        totalSeedCostWl += (totalQty / Math.max(0.01, st.seedsPerWl)) * st.wlAmount;
+      }
+
+      const extraCostWl = parseFloat(document.getElementById('extraCostWlInput').value) || 0;
+      const totalModalWl = totalSeedCostWl + extraCostWl;
+
+      // 2. Hitung Output Akhir
+      const targetTrees = Math.max(1, parseInt(document.getElementById('targetTreesInput').value, 10) || 200);
+      const sellMode = document.getElementById('sellModeSelect').value;
+      const blockYield = Math.max(0.1, parseFloat(document.getElementById('blockYieldInput').value) || 2.2);
+      const yieldRate = Math.max(0.05, parseFloat(document.getElementById('yieldRateInput').value) || 1.0);
+
+      const finalOutputCount = sellMode === 'block' 
+        ? Math.floor(targetTrees * blockYield) 
+        : Math.floor(targetTrees * yieldRate);
+
+      // 3. Hitung Omzet & Profit Bersih
+      const sellRatePerWl = Math.max(0.01, parseFloat(document.getElementById('sellRatePerWlInput').value) || 10);
+      const sellWlAmount = Math.max(1, parseFloat(document.getElementById('sellWlAmountInput').value) || 1);
+
+      const grossRevenueWl = (finalOutputCount / sellRatePerWl) * sellWlAmount;
+      const netProfitWl = grossRevenueWl - totalModalWl;
+
+      const rootBlock = itemsMap.get(latestPlanResult.rootBlockId);
+      const unitName = sellMode === 'block' 
+        ? (rootBlock ? rootBlock.name : 'Blocks') 
+        : `${rootBlock ? rootBlock.name : 'Item'} Seeds`;
+
+      document.getElementById('profitEstOutput').textContent = `${finalOutputCount.toLocaleString()} ${unitName}`;
+      document.getElementById('profitTotalCost').textContent = formatWlDl(totalModalWl);
+      document.getElementById('profitGrossRev').textContent = formatWlDl(grossRevenueWl);
+
+      const netEl = document.getElementById('profitNetValue');
+      if (netProfitWl >= 0) {
+        netEl.textContent = `+${formatWlDl(netProfitWl)}`;
+        netEl.className = 'font-extrabold text-emerald-400 text-sm';
+      } else {
+        netEl.textContent = `-${formatWlDl(Math.abs(netProfitWl))}`;
+        netEl.className = 'font-extrabold text-rose-400 text-sm';
+      }
+    }
+
+    // Render Panduan Step-by-Step Massing per Tier
+    function renderStepByStepGuide(plan) {
+      const container = document.getElementById('stepsListContainer');
+      container.innerHTML = '';
+
+      const sortedTiers = Array.from(plan.stepsByTier.keys()).sort((a, b) => a - b);
+
+      if (sortedTiers.length === 0) {
+        container.innerHTML = `<div class="text-xs text-slate-500 italic p-3 bg-slate-950 rounded-lg">Tidak ada tahapan splicing untuk item ini.</div>`;
+        return;
+      }
+
+      for (const tierNum of sortedTiers) {
+        const tierMap = plan.stepsByTier.get(tierNum);
+        const tierBox = document.createElement('div');
+        tierBox.className = 'bg-slate-950 border border-slate-800 rounded-xl p-3 space-y-2.5';
+
+        const isFinalTier = tierNum === sortedTiers[sortedTiers.length - 1];
+        tierBox.innerHTML = `
+          <div class="flex items-center justify-between border-b border-slate-800 pb-1.5">
+            <span class="text-xs font-bold ${isFinalTier ? 'text-emerald-400' : 'text-sky-400'}">
+              ${isFinalTier ? `🏆 TAHAP AKHIR (Tier ${tierNum})` : `⚡ TAHAP ${tierNum}`}
+            </span>
+            <span class="text-[11px] text-slate-400">${tierMap.size} Splicing Batch</span>
+          </div>
+        `;
+
+        const stepsWrapper = document.createElement('div');
+        stepsWrapper.className = 'space-y-2';
+
+        for (const step of tierMap.values()) {
+          const ing1Item = itemsMap.get(step.ing1);
+          const ing2Item = itemsMap.get(step.ing2);
+          const targetIcon = getItemIconDataUrl(step.blockItem || step.seedItem);
+
+          const stepCard = document.createElement('div');
+          stepCard.className = 'bg-slate-900 border border-slate-800/90 rounded-lg p-2.5 text-xs flex items-center gap-3';
+          stepCard.innerHTML = `
+            <img src="${targetIcon}" class="w-9 h-9 rounded bg-slate-950 p-1 border border-slate-800 pixelated shrink-0" />
+            <div class="flex-1 min-w-0">
+              <div class="font-bold text-white flex items-center justify-between">
+                <span class="truncate">Buat ${step.blockItem ? step.blockItem.name : step.seedItem.name}</span>
+                <span class="text-[10px] text-amber-400 font-normal shrink-0">⏱️ ${formatDuration(step.seedItem.growTime)}</span>
+              </div>
+              <div class="text-[11px] text-slate-300 mt-0.5">
+                Splice <b class="text-emerald-400">${step.treesToPlant.toLocaleString()}</b> <span class="text-slate-400">${ing1Item ? ing1Item.name : `#${step.ing1}`}</span>
+                + <b class="text-emerald-400">${step.treesToPlant.toLocaleString()}</b> <span class="text-slate-400">${ing2Item ? ing2Item.name : `#${step.ing2}`}</span>
+              </div>
+            </div>
+          `;
+          stepsWrapper.appendChild(stepCard);
+        }
+
+        tierBox.appendChild(stepsWrapper);
+        container.appendChild(tierBox);
+      }
+    }
+
+    /*************************************************************************
+     * 8. FITUR PENCARIAN ITEM, DRAG-TO-SCROLL, & EVENT LISTENERS
+     *************************************************************************/
+    function setupSearchBox() {
+      const input = document.getElementById('searchInput');
+      const dropdown = document.getElementById('searchResults');
+
+      input.addEventListener('input', () => {
+        const query = input.value.trim().toLowerCase();
+        if (!query) {
+          dropdown.classList.add('hidden');
+          return;
+        }
+
+        // Cari item blok/pakaian (ID genap) yang cocok dengan nama
+        const matches = [];
+        for (const [id, item] of itemsMap.entries()) {
+          if (id % 2 !== 0) continue; // Utamakan tampilkan item utama (bukan duplikat tulisan Seed)
+          if (item.name.toLowerCase().includes(query) || String(id) === query) {
+            const seedItem = itemsMap.get(id + 1);
+            const hasSplice = seedItem && Array.isArray(seedItem.spliceSeeds);
+            matches.push({ item, seedItem, hasSplice });
+            if (matches.length >= 25) break;
+          }
+        }
+
+        dropdown.innerHTML = '';
+        if (matches.length === 0) {
+          dropdown.innerHTML = `<div class="p-3 text-xs text-slate-400">Item tidak ditemukan. Pastikan file items.txt lengkap sudah dimuat.</div>`;
+        } else {
+          for (const m of matches) {
+            const iconUrl = getItemIconDataUrl(m.item);
+            const row = document.createElement('div');
+            row.className = 'p-2.5 hover:bg-slate-800 cursor-pointer flex items-center justify-between gap-3 transition';
+            row.onclick = () => {
+              currentSelectedItemId = m.item.id;
+              skippedSeeds.clear();
+              input.value = m.item.name;
+              dropdown.classList.add('hidden');
+              renderAll();
+            };
+
+            row.innerHTML = `
+              <div class="flex items-center gap-2.5 min-w-0">
+                <img src="${iconUrl}" class="w-8 h-8 rounded bg-slate-950 p-0.5 border border-slate-700 pixelated shrink-0" />
+                <div class="truncate">
+                  <div class="text-xs font-bold text-white truncate">${m.item.name} <span class="text-[10px] text-slate-500 font-mono">#${m.item.id}</span></div>
+                  <div class="text-[10px] text-slate-400">Rarity: ${m.item.rarity === 999 ? 'N/A' : m.item.rarity} • File: ${m.item.textureFileName}</div>
+                </div>
+              </div>
+              <span class="text-[10px] px-2 py-0.5 rounded font-semibold shrink-0 ${
+                m.hasSplice ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30' : 'bg-slate-800 text-slate-400'
+              }">
+                ${m.hasSplice ? 'Spliceable ✅' : 'Base Item'}
+              </span>
+            `;
+            dropdown.appendChild(row);
+          }
+        }
+        dropdown.classList.remove('hidden');
+      });
+
+      document.addEventListener('click', (e) => {
+        if (!input.contains(e.target) && !dropdown.contains(e.target)) {
+          dropdown.classList.add('hidden');
+        }
+      });
+    }
+
+    // Drag-to-scroll untuk kanvas pohon silsilah
+    function setupDragToScroll() {
+      const viewport = document.getElementById('treeViewport');
+      let isDown = false, startX, startY, scrollLeft, scrollTop;
+
+      viewport.addEventListener('mousedown', (e) => {
+        if (e.target.tagName === 'BUTTON' || e.target.tagName === 'INPUT') return;
+        isDown = true;
+        startX = e.pageX - viewport.offsetLeft;
+        startY = e.pageY - viewport.offsetTop;
+        scrollLeft = viewport.scrollLeft;
+        scrollTop = viewport.scrollTop;
+      });
+      viewport.addEventListener('mouseleave', () => isDown = false);
+      viewport.addEventListener('mouseup', () => isDown = false);
+      viewport.addEventListener('mousemove', (e) => {
+        if (!isDown) return;
+        e.preventDefault();
+        const x = e.pageX - viewport.offsetLeft;
+        const y = e.pageY - viewport.offsetTop;
+        viewport.scrollLeft = scrollLeft - (x - startX);
+        viewport.scrollTop = scrollTop - (y - startY);
+      });
+    }
+
+    // Navigasi Tab Kanan & Modal
+    function switchTab(tab) {
+      const isShop = tab === 'shopping';
+      document.getElementById('tabContentShopping').classList.toggle('hidden', !isShop);
+      document.getElementById('tabContentSteps').classList.toggle('hidden', isShop);
+
+      document.getElementById('tabBtnShopping').className = isShop
+        ? 'py-3 text-center border-b-2 border-emerald-500 text-emerald-400 bg-slate-900/80 transition'
+        : 'py-3 text-center border-b-2 border-transparent text-slate-400 hover:text-slate-200 transition';
+
+      document.getElementById('tabBtnSteps').className = !isShop
+        ? 'py-3 text-center border-b-2 border-emerald-500 text-emerald-400 bg-slate-900/80 transition'
+        : 'py-3 text-center border-b-2 border-transparent text-slate-400 hover:text-slate-200 transition';
+    }
+
+    function toggleModal(id, show) {
+      document.getElementById(id).classList.toggle('hidden', !show);
+    }
+
+    // Inisialisasi Aplikasi saat Halaman Dimuat
+    window.addEventListener('DOMContentLoaded', async () => {
+      setupSearchBox();
+      setupDragToScroll();
+
+      document.getElementById('targetTreesInput').addEventListener('input', renderAll);
+      document.getElementById('yieldRateInput').addEventListener('input', renderAll);
+
+      // Handler Upload File items.txt
+      document.getElementById('itemsTxtInput').addEventListener('change', async (e) => {
+        const file = e.target.files[0];
+        if (!file) return;
+        const text = await file.text();
+        parseItemsTxt(text, true);
+        saveToIDB('saved_items_txt', text);
+        renderAll();
+      });
+
+      // Handler Upload Banyak File .rttex
+      document.getElementById('rttexFilesInput').addEventListener('change', async (e) => {
+        const files = Array.from(e.target.files);
+        if (!files.length) return;
+
+        const savedRttexMap = (await getFromIDB('saved_rttex_map')) || {};
+        for (const f of files) {
+          try {
+            const buf = await f.arrayBuffer();
+            await decodeRttexBuffer(buf, f.name);
+            savedRttexMap[f.name.toLowerCase()] = buf;
+          } catch (err) {
+            console.error(err);
+            alert(`Gagal membaca ${f.name}: ${err.message}`);
+          }
+        }
+        saveToIDB('saved_rttex_map', savedRttexMap);
+        renderAll();
+      });
+
+      // Muat data dari IndexedDB jika sebelumnya sudah pernah upload
+      await initIndexedDB();
+      const cachedTxt = await getFromIDB('saved_items_txt');
+      if (cachedTxt) {
+        parseItemsTxt(cachedTxt, true);
+      } else {
+        parseItemsTxt(SAMPLE_ITEMS_TXT, false);
+      }
+
+      const cachedRttex = await getFromIDB('saved_rttex_map');
+      if (cachedRttex) {
+        for (const [fname, buf] of Object.entries(cachedRttex)) {
+          try {
+            await decodeRttexBuffer(buf, fname);
+          } catch (e) {
+            console.warn('Gagal memulihkan RTTEX dari cache:', fname);
+          }
+        }
+      }
+
+      renderAll();
+    });
+  </script>
+</body>
+</html>
